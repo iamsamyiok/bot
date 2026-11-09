@@ -1,0 +1,36 @@
+{
+  "keys": {
+    "SILICONFLOW_API_KEY": "",
+    "OPENROUTER_KEY_1": "",
+    "MODELSCOPE_API_TOKEN": "",
+    "NVIDIA_NIM": "",
+    "FEISHU_APP_ID": "",
+    "FEISHU_APP_SECRET": "",
+    "NTFY_TOPIC": ""
+  },
+  "providers": {
+    "llm_chain": [
+      {"name": "siliconflow", "base_url": "https://api.siliconflow.cn/v1/chat/completions",
+       "model": "Qwen/Qwen2.5-7B-Instruct", "api_key_env": "SILICONFLOW_API_KEY"},
+      {"name": "openrouter", "base_url": "https://openrouter.ai/api/v1/chat/completions",
+       "model": "recursive/flint-v1.0:free", "api_key_env": "OPENROUTER_KEY_1"},
+      {"name": "modelscope", "base_url": "https://api-inference.modelscope.cn/v1/chat/completions",
+       "model": "Qwen/Qwen3.8-Flash-Next", "api_key_env": "MODELSCOPE_API_TOKEN"}
+    ]
+  },
+  "paths": {
+    "state": "",
+    "desktop_dir": "",
+    "knowledge_dir": ""
+  },
+  "workers": {
+    "max_workers": 3,
+    "opencode_models": ["opencode/glm-5.3-flash-free", "opencode/deepseek-v4.1-flash-free", "opencode/flint-40b-free"]
+  },
+  "features": {
+    "approval_gate": true,
+    "batch_route_seconds": 8,
+    "quota_gate": false,
+    "voice_tts": false
+  }
+}

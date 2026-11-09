@@ -1,0 +1,22 @@
+# 密钥与配置(含真实key)
+config/bot.json
+config/keys.json
+
+# 运行时数据
+state/
+logs/
+*.log
+*.db
+*.db-*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 本地实验
+workspace/
+reports/
+uploads/
+outputs/

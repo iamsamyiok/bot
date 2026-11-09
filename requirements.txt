@@ -1,0 +1,13 @@
+# 核心必需(最小运行)
+# (核心链路零第三方依赖: 标准库+curl子进程即可跑通)
+
+# ===== 可选: 按启用的工人/通道安装 =====
+lark-oapi>=1.6.8        # 飞书通道(含审批卡片回调)
+requests                # 部分工人 HTTP 调用
+psutil                  # 系统监控(周报/日报)
+
+# ===== 可选: 记忆增强(ReMe 数字分身) =====
+# reme-ai[core]>=0.4.2  # 独立部署, 见 docs/CHANNELS.md
+
+# ===== 可选: GUI 桌面工人 =====
+# 依赖 UFO2 (github.com/microsoft/UFO), 见 docs/WORKERS.md
