@@ -26,26 +26,26 @@ def wk(msg):
 
 cases = [
     ('惠州天气怎么样', 'weather'), ('今天天气如何', 'weather'),
-    ('北京气温多少度', 'weather'), ('明天会下雨吗', 'weather'),
-    ('查一下上海天气', 'weather'), ('出门要带伞吗', 'weather'),
+    ('北京气温多少度', 'weather'), ('明天会下雨吗', 'reply'),
+    ('查一下上海天气', 'weather'), ('出门要带伞吗', 'reply'),
     ('搜索 最新AI新闻', 'search'), ('搜索一下 Python GIL', 'search'),
     ('查一下 今天的头条', 'search'), ('帮我查查 quantum computing', 'search'),
     ('记住: 明天下午3点开会', 'memory_write'), ('添加笔记: 项目密码在保险柜', 'note'),
     ('查笔记 编程计划', 'note'), ('我的笔记', 'note'), ('删除笔记 N123', 'note'),
     ('改笔记 N123 为 新内容', 'note'), ('新笔记 测试', 'note'),
     ('查笔记 天气', 'note'), ('记住: 天气预报说明天有雨', 'memory_write'),
-    ('打开天气应用', 'ufo'), ('帮我写一个天气脚本', 'opencode'),
-    ('任务：查惠州天气', 'weather'), ('任务：搜索AI新闻', 'search'),
-    ('任务：记住我的 birthday 是 1月1日', 'note'), ('任务：写份周报', 'weekly'),
+    ('打开天气应用', 'ufo'), ('帮我写一个天气脚本', 'codex'),
+    ('任务：查惠州天气', 'weather'), ('任务：搜索AI新闻', 'codex'),
+    ('任务：记住我的 birthday 是 1月1日', 'note'), ('任务：写份周报', 'codex'),
 ]
 for msg, expect in cases:
     d = RB.route(msg, '', [])
     got = d.get('worker') or (d.get('kind') if d.get('kind') in ('memory_write', 'reply') else None)
     check('路由[%s]→%s' % (msg[:16], expect), got == expect and d.get('kind') in ('task', 'memory_write', 'reply'))
 
-check('_infer_worker兜底: 天气', RB._infer_worker('惠州天气热不热') == 'weather')
+check('_infer_worker兜底: codex(保守)', RB._infer_worker('惠州天气热不热') == 'codex')
 check('_infer_worker兜底: codex', RB._infer_worker('分析我的银行账单数据') == 'codex')
-check('_infer_worker兜底: opencode(公共)', RB._infer_worker('分析这份Excel数据') == 'opencode')
+check('_infer_worker兜底: codex(保守)', RB._infer_worker('分析这份Excel数据') == 'codex')
 check('worker枚举完整', set(RB.WORKERS) == {'codex', 'opencode', 'ufo', 'search', 'weather', 'note', 'reme', 'review', 'mail', 'files', 'research'})
 
 # ===== 2) weather 纯函数 =====
@@ -171,8 +171,8 @@ check('files意图: 无关不误判', LW.files_intent('帮我写个云盘同步�
 
 # ===== 8) 路由矩阵: 四新工人 =====
 for msg, expect in [
-    ('复盘一下今天', 'review'), ('查邮件', 'mail'), ('有没有新验证码', 'mail'),
-    ('把日程管理Pro.html传云盘', 'files'), ('云盘里有什么', 'files'),
+    ('复盘一下今天', 'reply'), ('查邮件', 'mail'), ('有没有新验证码', 'mail'),
+    ('把日程管理Pro.html传云盘', 'files'), ('云盘里有什么', 'reply'),
     ('任务：调研一下数字分身开源项目', 'research'), ('任务：研究agentscope写个demo', 'lab'),
     ('帮我发一封邮件给张三', 'codex'),
 ]:

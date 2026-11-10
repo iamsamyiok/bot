@@ -491,6 +491,11 @@ def start(on_chat_cb):
                 _reply_cli.append(lark.Client.builder().app_id(app_id).app_secret(
                     load_config()['feishu']['app_secret']).build())
             req = _build_reply_req(msg.message_id, text)
+            try:
+                import uxlog
+                uxlog.log('reply', 'out', text, 'feishu')
+            except Exception:
+                pass
             ok = _check_resp(_reply_cli[0].im.v1.message.reply(req), '回复')
             if not ok:                    # 业务错(限流等)→ 退避重试一次, 丢回复=用户侧"没反应"
                 time.sleep(1.5)

@@ -53,6 +53,7 @@ def check(url, bat, cwd, name):
 
 
 def main():
+    reme_home = os.environ.get('BUTLER_REME_HOME', '')
     acted = []
     if check('http://127.0.0.1:9991/api/health',
              BASE + r'\start_router.bat', BASE, '管家9991'):

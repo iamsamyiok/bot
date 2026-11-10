@@ -23,6 +23,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(BASE, 'state')
 LEDGER = os.path.join(STATE, 'ledger.jsonl')
 LOGS = os.path.join(STATE, 'worker_logs')
+MAX_DELEGATION_ROUNDS = 3  # 委派循环上限(用户指令: 3次无法完成就如实报告)
 SESSIONS_DIR = os.path.join(os.path.expanduser('~'), '.codex', 'sessions')
 
 MAX_WORKERS_CAP = 3
@@ -481,6 +482,7 @@ def _run_one(tid, sid):
         if sub is None:
             return
         instruction = sub['instruction']
+        instruction = t.get('fix_instruction') or instruction
         sub['status'] = 'running'
         log_id = sid
     if t.get('status') == 'queued':
@@ -506,6 +508,33 @@ def _run_one(tid, sid):
                     time.sleep(2)
         if not ans and not err:
             err = 'EMPTY_RESULT'
+        # ---- 质量检查环节(用户指令: 回复质量不过关不得发出) ----
+        # Q1完整性+Q2实质性: weather/search 逐实体校验; 不达标→重试→升级codex重做
+        if not err and t.get('wtype') in ('search', 'weather'):
+            try:
+                import quality_gate as _qg
+                qr = _qg.check(instruction, ans)
+                if not qr['ok'] and qr['missing']:
+                    # 完整性缺陷(如两地天气只答了一地): 直接用多城市循环重跑一次
+                    _note(t, '质检未过(%s), 重试' % '; '.join(qr['reasons'])[:60])
+                    save_task(tid)
+                    ans2 = light_workers.run(t['wtype'], instruction)
+                    qr2 = _qg.check(instruction, ans2)
+                    if qr2['ok']:
+                        ans = ans2
+                    elif _qg.should_escalate(qr2['reasons'] or qr['reasons']):
+                        # 结构性缺陷(缺实体) → 升级 codex 重做(改wtype后重跑本函数)
+                        _note(t, '重试仍缺实体 → 升级codex重做')
+                        save_task(tid)
+                        t['wtype'] = 'codex'
+                        t['status'] = 'queued'
+                        sub_or_none(t, sid)['status'] = 'queued'
+                        _run_one(tid, sid)
+                        return
+                    else:
+                        ans = ans2
+            except Exception as _qe:
+                _note(t, '质检异常(放行): %s' % str(_qe)[:60])
         # 用户可见的失败原因透传(原先只给"轻工人执行失败", 真因被吞)
         reason = err.replace('LIGHT_FAIL: ', '').replace('EMPTY_RESULT', '工人无返回')[:120] if err else ''
         _finish_run(t, sid, sub_or_none(t, sid), ans[:8000], err,
@@ -788,15 +817,6 @@ def _finish_run(t, sid, sub, answer, error_code, error, session='', log_id=''):
                 _note(t, hint)
         except Exception:
             pass
-        # D后续建议: 完成时基于问题+结果生成1-2个可追问方向(轻量, fast档)
-        try:
-            import router_brain as _rb
-            sug = _rb.suggest_followups(t.get('question', ''),
-                                        subs[0].get('result', '') if subs else '')
-            if sug:
-                t['suggest'] = sug
-        except Exception:
-            pass
         if ok_n:
             # 看图/识图类任务: 完整准确优先(用户指令), 跳过LLM压缩, 全文直出+入记忆
             _q = ' '.join((t.get('question') or '').split())
@@ -822,12 +842,55 @@ def _finish_run(t, sid, sub, answer, error_code, error, session='', log_id=''):
             sm = '\n'.join('%s(%s): %s' % (s.get('brief', ''), s.get('status', ''),
                           (s.get('error') or s.get('result') or '')[:200])
                           for s in subs)
+        # ===== delegation loop (user directive) =====
+        deleg = t.get('delegation') or {'round': 0}
+        _can_delegate = (len(subs) == 1 and subs[0].get('status') == 'done'
+                         and not stopped_n
+                         and t.get('wtype') in ('codex', 'opencode')
+                         and deleg['round'] < MAX_DELEGATION_ROUNDS)
+        if _can_delegate:
+            import delegation as _dg
+            verdict = _dg.verify(t.get('question', ''), raw_answer)
+            hist = deleg.setdefault('history', [])
+            hist.append({'round': deleg['round'] + 1,
+                         'verdict': verdict['verdict'],
+                         'reasons': verdict['reasons']})
+            t['delegation'] = deleg
+            if verdict['verdict'] == 'FAIL' and deleg['round'] < MAX_DELEGATION_ROUNDS - 1:
+                deleg['round'] += 1
+                t['delegation'] = deleg
+                _note(t, 'delegation: FAIL(%s), round %d' % (
+                    '; '.join(verdict['reasons'])[:50], deleg['round']))
+                new_wt = t['wtype']
+                if deleg['round'] >= 2:
+                    new_wt = _dg.alt_engine(t['wtype'])
+                fix_ins = _dg.fix_instruction(t.get('question', ''), raw_answer,
+                                              verdict['reasons'], deleg['round'])
+                t['status'] = 'queued'
+                subs[0]['status'] = 'queued'
+                subs[0]['result'] = ''
+                t['fix_instruction'] = fix_ins
+                t['delegation'] = deleg
+                save_task(tid)
+                if new_wt == 'opencode':
+                    _run_one(tid, sid)
+                else:
+                    import threading as _th2
+                    _th2.Thread(target=_run_one, args=(tid, sid), daemon=True).start()
+                return
+            elif verdict['verdict'] == 'FAIL':
+                _note(t, 'delegation: rounds exhausted, report honestly')
+                sm = (sm + chr(10) + chr(10) +
+                      'Warning: after %d attempts still below standard (%s). Above is the last actual result.' % (
+                          MAX_DELEGATION_ROUNDS, '; '.join(verdict['reasons'])[:80]))
         t['summary'] = '[%s] 「%s」\n%s' % (tid, t.get('question', '')[:50], sm)
-        # status 最后置位; stopped 优先于 failed(用户主动停止不是失败)
+        # status set last; stopped beats failed (user stop is not failure)
         if stopped_n:
             t['status'] = 'stopped'
         else:
             t['status'] = 'done' if ok_n else 'failed'
+        t['ended'] = t.get('ended') or time.strftime('%Y-%m-%d %H:%M:%S')
+        # set status last; stopped beats failed
         try:
             import memory_engine
             memory_engine.index_task(tid, t.get('question', ''),
@@ -896,6 +959,17 @@ def start(push_done_cb=None, push_summary_cb=None, max_workers=3):
             for s2 in t.get('subtasks', []):        # 自愈: 排队任务原样续跑
                 if s2.get('status') == 'queued':
                     _queue.put((t['id'], s2['sid']))
+    # 中断任务通知: 如果有interrupted任务, 通知用户(飞书/ntfy), 不让中断悄悄发生
+    _interrupted_notify = [t for t in _tasks.values()
+                           if t.get('status') == 'interrupted'
+                           and t.get('error_code') == 'SERVICE_RESTARTED']
+    for t in _interrupted_notify:
+        try:
+            import feishu_adapter as _fa
+            _fa.reply_to_last('⚠ 服务重启导致以下任务被中断, 可对我说「重试 %s」继续:\n· %s' % (
+                t['id'][-8:], ' '.join((t.get('question') or '').split())[:60]))
+        except Exception:
+            pass
     for i in range(_cfg['max_workers']):
         threading.Thread(target=_worker_loop, daemon=True,
                          name='worker-%d' % i).start()

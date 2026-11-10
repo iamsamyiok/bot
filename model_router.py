@@ -26,37 +26,21 @@ MS_EP = 'https://api-inference.modelscope.cn/v1/chat/completions'
 MS_MODEL = 'Qwen/Qwen3.8-Flash-Next'
 MS_STRONG = 'ZhipuAI/GLM-5.2'   # 免费档强模型(2026-11-07实测 0.96s, 比旧7B还快)
 
-# Responsible API 设计(用户指令): 用户在 config/bot.json 的 providers.llm_chain 里
-# 自行填写 base_url / model / api_key_env —— bot 不内置任何供应商偏好, 任何
-# OpenAI 兼容端点(含本地 Ollama)都能接。api_key_env 指向 keys 段或环境变量。
-# 下面 DEFAULT_* 仅是 bot.json 缺失时的开箱示例(全部免费档)。
+# 双档链(全部免费模型, 用户红线: 不产生任何费用):
+#   fast  = 路由分类/画像提炼/记忆消解 等"快而稳"的活
+#   strong = A类直答/任务总结 等"要聪明"的活(实测GLM-5.2延迟≈7B, 直答质量跃升)
 FAST_CHAIN = [
-    ('siliconflow', SF_EP, 'SILICONFLOW_API_KEY', SF_MODEL),
-    ('openrouter', OR_EP, 'OPENROUTER_KEY_1', OR_MODEL),
-    ('modelscope', MS_EP, 'MODELSCOPE_API_TOKEN', MS_MODEL),
+    ('硅基', SF_EP, 'SILICONFLOW_API_KEY', SF_MODEL),
+    ('or-flint', OR_EP, 'OPENROUTER_KEY_1', OR_MODEL),
+    ('魔搭', MS_EP, 'MODELSCOPE_API_TOKEN', MS_MODEL),
 ]
-STRONG_CHAIN = FAST_CHAIN
-
-
-def _chain_from_config():
-    """bot.json providers.llm_chain → [(name, ep, keyname, model)]"""
-    import config as _cfg
-    raw = _cfg._load()
-    chain = (raw.get('providers') or {}).get('llm_chain') or []
-    out = []
-    for p in chain:
-        out.append((p.get('name', p.get('base_url', '?')[:20]),
-                    p.get('base_url', ''), p.get('api_key_env', ''),
-                    p.get('model', '')))
-    return out
-
-
-def _chains():
-    cfg_chain = _chain_from_config()
-    if cfg_chain:
-        # strong链=同一链(用户配置已是自己选的模型); fast链=同链(简化, 单链双tier)
-        return cfg_chain, cfg_chain
-    return FAST_CHAIN, STRONG_CHAIN
+STRONG_CHAIN = [
+    ('魔搭-GLM52', MS_EP, 'MODELSCOPE_API_TOKEN', MS_STRONG),
+    ('魔搭-DV41F', MS_EP, 'MODELSCOPE_API_TOKEN',
+     'deepseek-ai/DeepSeek-V4.1-Flash-1017'),   # 2026-11-07核验0.9s(旧slug无provider勿用)
+    ('魔搭-flash', MS_EP, 'MODELSCOPE_API_TOKEN', MS_MODEL),
+    ('硅基', SF_EP, 'SILICONFLOW_API_KEY', SF_MODEL),
+]
 
 
 def _key(name):
@@ -93,8 +77,7 @@ def chat(prompt, mt=500, system=None, tier='fast'):
     if system:
         msgs.append({'role': 'system', 'content': system})
     msgs.append({'role': 'user', 'content': prompt})
-    fast_c, strong_c = _chains()
-    chain = (strong_c if tier == 'strong' else fast_c)
+    chain = (STRONG_CHAIN if tier == 'strong' else FAST_CHAIN)
     last_err = ''
     for name, ep, keyname, model in chain:
         tok = _key(keyname)

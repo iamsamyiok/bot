@@ -55,13 +55,14 @@ WORKER_NOTE = {
     'weather': '已派 🌤 天气 worker 执行(轻量快速)',
     'note': '已派 📝 笔记 worker 执行(轻量快速)',
     'ufo': '已派 GUI worker 执行',
-    'codex': '已派 1 个 worker 执行(私有任务)',
+    'codex': '已派 codex worker 执行(私有任务)',
     'opencode': '已派 🔓 opencode worker 执行(公共任务, 免费LLM)',
     'reme': '已派 🧠 记忆 worker 执行(数字分身)',
     'review': '已派 🔄 复盘 worker 执行(提炼经验入知识库)',
     'mail': '已派 📬 邮件 worker 执行(agent.qq.com信箱)',
     'files': '已派 📁 文件 worker 执行(云盘/本地文件)',
     'research': '已派 🔬 调研 worker 执行(标准三件套交付)',
+    'weekly': '已派 📊 周报 worker 执行(聚合近7天)',
 }
 
 
@@ -92,42 +93,29 @@ def _is_research_task(msg):
 
 
 def _infer_worker(msg):
-    """确定性工人推断(快速路径与 LLM 兜底共用):
-    GUI > 天气 > 复盘 > 邮件 > 文件 > 笔记 > 调研 > 搜索 > codex"""
+    """兜底工人推断(仅在LLM不可用时): 只认零歧义信号, 其余一律codex"""
     if any(k in msg for k in GUI_KW):
         return 'ufo'
-    if (len(msg) <= 60 and re.search(r'天气|气温|温度|降雨|下雨|带伞|湿度|热不热|冷不热|穿什么', msg)
-            and not re.search(r'写|代码|应用|软件|脚本|报告|分析|页面|查询系统|笔记', msg)
-            and not re.search(r'进度|怎么样了|做得如何|做完了吗|完成了吗|状态如何', msg)):
-        return 'weather'
-    if len(msg) <= 30 and re.search(r'复盘|回顾一下|总结一下?(今天|今日|昨天|前天)', msg):
-        return 'review'
-    if len(msg) <= 30 and re.search(r'周报|这[一周]我做了什么|本周总结|上周总结', msg):
-        return 'weekly'
-    if (len(msg) <= 40 and re.search(r'邮件|验证码|收件箱|inbox', msg)
-            and not re.search(r'写|发送|发一?封|发邮件|给.{0,10}(写|发)|脚本|代码', msg)):
-        return 'mail'
-    if (len(msg) <= 60 and re.search(r'云盘|阿里云盘|网盘|找一下.{0,24}文件|找一下.{0,20}\.(zip|pdf|docx|xlsx|html|md|exe)|找(一下)?本地', msg)
-            and not re.search(r'写|代码|脚本|报告|调研', msg)):
-        return 'files'
+    # 记忆/笔记读写(强指令词开头, 零歧义)
     if re.match(r'^(请)?(帮我)?(新增|添加|加)(一条)?(记忆|笔记)|^(请)?(帮我)?记(住|一下|个)[:：]?|^新(笔记|记忆)|'
-                r'^查(询)?(一下)?(记忆|笔记)|^删除(记忆|笔记)|^删掉(记忆|笔记)|^改(记忆|笔记)|^修改(记忆|笔记)|'
-                r'^更新(记忆|笔记)|^记忆(里|中|查询)?', msg):
-        if '记忆' in msg or '分身' in msg:
-            return 'reme'
-        return 'note'
+                r'^查(询)?(一下)?(记忆|笔记)|^删除(记忆|笔记)|^改(记忆|笔记)|^更新(记忆|笔记)', msg):
+        return 'reme' if ('记忆' in msg or '分身' in msg) else 'note'
+    # 显式指名的工人
+    if re.search(r'邮件|验证码', msg) and not re.search(r'写|发送|发一?封|给.{0,10}(写|发)', msg):
+        return 'mail'
     if _is_research_task(msg):
         return 'research'
-    if re.match(r'^(请)?(帮我)?(联网|上网)?((搜索|搜一下|搜一搜|搜搜|查一下|查查|查下)(一下)?[:：,，\s]?|查询[:：,，\s])', msg) \
-            and len(msg) <= 80:
-        return 'search'
-    # 公共/私有分流(用户指令): 公共任务走opencode免费LLM, 涉密/个人信息走codex;
-    # opencode失败在worker侧自动降级codex
-    PRIVATE_KW = ('密码', '账号', '账密', '个人', '涉密', '身份证', '银行', '支付',
-                  '私密', '家里', '老婆', '家人', '内部', 'api-key', 'token', 'secret')
-    if any(k in msg.lower() for k in PRIVATE_KW):
-        return 'codex'
-    return 'opencode'
+    if re.search(r'lab|实验室', msg, re.I):
+        return 'lab'
+    # 天气: 必须是明确的天气询问句式(不是含天气词就算)
+    if (len(msg) <= 30
+            and re.search(r'(天气|气温|温度|湿度)(怎么样|如何|呢|？|\?|$)', msg)
+            and not re.search(r'写|代码|脚本|报告|分析', msg)
+            and re.search(r'(查|看|问|看看|一下)?', msg)
+            and re.match(r'^[^，。]{2,12}(天气|气温|温度)', msg)):
+        return 'weather'
+    # 其余全部交LLM判断的分支在route()中处理; 本函数作为LLM失败兜底, 保守返回codex
+    return 'codex'
 
 
 def _task_result(msg, worker, note):
@@ -218,19 +206,9 @@ def route(message, memory_ctx, tasks_snapshot, dialog_ctx=''):
     if re.match(r'^(定时|例程|定时任务)(列表)?$', msg) and len(msg) <= 12:
         return {'kind': 'routine_list', 'reply': None, 'subtasks': None, 'note': ''}
 
-    # ---- 快速路径2c: 笔记/天气/搜索 确定性识别 → 直接派轻工人(零LLM, 秒级) ----
-    # 顺序: 笔记在前(『查笔记 天气』是笔记查询不是天气); 天气排除笔记字样
-    # 新三工人(复盘/邮件/文件)在最前, 特定词零碰撞
-    if len(msg) <= 30 and re.search(r'复盘|回顾一下|总结一下?(今天|今日|昨天|前天)', msg):
-        return _task_result(msg, 'review', '')
-    if len(msg) <= 30 and re.search(r'周报|这[一周]我做了什么|本周总结|上周总结', msg):
-        return _task_result(msg, 'weekly', '')
-    if (len(msg) <= 40 and re.search(r'邮件|验证码|收件箱|inbox', msg)
-            and not re.search(r'写|发送|发一?封|发邮件|给.{0,10}(写|发)|脚本|代码', msg)):
-        return _task_result(msg, 'mail', '')
-    if (len(msg) <= 60 and re.search(r'云盘|阿里云盘|网盘|找一下.{0,24}文件|找一下.{0,20}\.(zip|pdf|docx|xlsx|html|md|exe)|找(一下)?本地', msg)
-            and not re.search(r'写|代码|脚本|报告|调研', msg)):
-        return _task_result(msg, 'files', '')
+    # ---- 快速路径2c(仅零歧义项; 其余任务分配一律交LLM判断——用户指令):
+    # 保留记忆/笔记读写指令 与 强制搜索指令; 天气/邮件/文件/复盘/周报等交给LLM(关键字有误判前科:
+    # "把合同发给律师"→mail, "一下雨就心情不好"→weather) ----
     if (re.search(r'记忆|数字分身', msg) and len(msg) <= 60 and
             re.search(r'记住|添加|新增|查|删除|删掉|修改|更新|找|有什么|有哪些|里|看', msg)):
         return _task_result(msg, 'reme', '')
@@ -239,12 +217,10 @@ def route(message, memory_ctx, tasks_snapshot, dialog_ctx=''):
     if re.match(r'^(请)?(帮我)?(新增|添加|加)(一条)?笔记|^(请)?(帮我)?记[:：]|^新笔记|'
                 r'^查(询)?(一下)?笔记|^删除笔记|^删掉笔记|^改笔记|^修改笔记|^更新笔记|^(我的|全部)笔记(列表)?$', msg):
         return _task_result(msg, 'note', '')
-    if len(msg) <= 60 and re.search(r'天气|气温|温度|降雨|下雨|带伞|湿度', msg) \
-            and not re.search(r'写|代码|应用|软件|脚本|报告|分析|笔记', msg) \
-            and not re.search(r'进度|怎么样了|做得如何|做完了吗|完成了吗|状态如何', msg):
-        return _task_result(msg, 'weather', '')
-    if re.match(r'^(请)?(帮我)?(联网|上网)?((搜索|搜一下|搜一搜|搜搜|查一下|查查|查下)(一下)?[:：,，\s]?|查询[:：,，\s])', msg) \
-            and len(msg) <= 80 and '天气' not in msg and '笔记' not in msg:
+    # "邮件里的XX"/"邮件里有没有X" → mail(查收件箱内容, 非联网搜索)
+    if re.search(r'邮件|收件箱|信箱', msg) and len(msg) <= 60             and not re.search(r'写|发送|发一?封|发邮件|给.{0,10}(写|发)|脚本|代码', msg):
+        return _task_result(msg, 'mail', '')
+    if re.match(r'^(请)?(帮我)?(联网|上网)?((搜索|搜一下|搜一搜|搜搜|查一下|查查|查下)(一下)?[:：,，\s]?|查询[:：,，\s])', msg)             and len(msg) <= 80 and '天气' not in msg and '笔记' not in msg:
         return _task_result(msg, 'search', '')
 
     # ---- 快速路径1a: 提醒请求 → LLM 抽取绝对时间 ----
@@ -275,7 +251,7 @@ def route(message, memory_ctx, tasks_snapshot, dialog_ctx=''):
 
     # ---- LLM 消化 ----
     prompt = ('你是用户的AI管家(Router)。判断用户消息: '
-              'A=纯对话(闲聊/问进度/问记忆/概念解释/知识问答/比较分析等'
+            'A=纯对话(闲聊/概念解释/知识问答/比较分析等; 注意: 查云盘/看周报/查邮件/查记忆/查天气这类需要真实系统数据的必须判B派对应worker, 严禁编造数据) '
               '用你自身知识就能回答, 且不含让系统执行动作的指令) '
               'B=任何指令性请求(请回复X/请写/请生成/请计算/请查/帮我做X/'
               '整理X/翻译X/测试X等——凡要求对具体内容做处理或产出的都是B, '
@@ -289,7 +265,7 @@ def route(message, memory_ctx, tasks_snapshot, dialog_ctx=''):
               '"worker": "codex|ufo|search|weather|note|review|mail|files|research(B/C时必填: ufo=必须真实操作Windows图形界面'
               '(打开关闭应用/点击界面/截图看屏幕/系统设置/浏览器页面操作); '
               'search=联网搜索新闻资料等轻量查询; weather=查天气; note=笔记增删改查; '
-              'review=复盘今日任务提炼经验; mail=查收邮件/验证码(agent.qq.com信箱); '
+              'review=复盘今日任务提炼经验; mail=只读查收邮件/验证码(agent.qq.com信箱, 不外发——外发邮件属于codex写内容后用其他方式); '
               'files=云盘上传下载/列表/本地找文件; research=深度调研出正式报告; '
               'codex=写代码写文件/复杂分析/下载处理等重活)", '
               '"reply": "A类: 结合记忆与任务状态直接回答用户(口语化); B/C类留空", '
@@ -479,7 +455,7 @@ def summarize_task(question, subtasks, memory_ctx=''):
                       str(question)[:200],
                       ('【用户记忆】' + memory_ctx[:300]) if memory_ctx else '',
                       '\n'.join(parts))[:2400])
-        t = _llm(prompt, mt=500, tier='strong')
+        t = _llm(prompt, mt=1500, tier='strong')
         t = (t or '').strip()
         # LLM残缺输出保护(实测GLM-5.2思考吃token时正文只剩1-2字): 过短用原文兜底
         if len(t) < 40 and parts:

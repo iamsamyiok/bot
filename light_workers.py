@@ -14,7 +14,7 @@ import subprocess
 import urllib.parse
 import urllib.request
 
-SEARCH_CLI = os.environ.get('BUTLER_SEARCH_CLI', '')  # 可选: unified-search 脚本路径
+SEARCH_CLI = os.environ.get('BUTLER_SEARCH_CLI', '')
 DEFAULT_CITY = '惠州'
 
 
@@ -206,13 +206,31 @@ def run_mail(instruction):
     msgs = (d.get('data') or {}).get('data') or []
     if not msgs:
         return '📬 agent.qq.com 信箱是空的。'
-    unread_n = sum(1 for m in msgs if not m.get('is_read'))
+    # 语义搜索: "邮件里的体检报告"/"找XX邮件" → 按关键词过滤主题/正文
+    kw_m = re.search(r'(?:邮件里?|信箱里?)(?:有[没有没有]|有没有|的|找|搜|查)?(?:个)?\s*(.+?)(?:的)?(?:内容|啥|什么|详情)?$', instruction)
+    if kw_m and not re.search(r'^\s*(查一下|看看|有没有|列出|列表)\s*$', kw_m.group(1)):
+        kw = kw_m.group(1).strip()
+        if kw and len(kw) >= 2 and not re.search(r'^(有没有|什么|啥|全部|列表)$', kw):
+            hits = []
+            for m in msgs:
+                text_j = (m.get('subject','') + ' ' + m.get('snippet','')).lower()
+                if kw.lower() in text_j:
+                    hits.append(m)
+            if hits:
+                lines2 = ['📬 含「%s」的邮件 %d 封:' % (kw, len(hits))]
+                for hm in hits[:5]:
+                    lines2.append('· %s (%s)' % ((hm.get('subject') or '')[:50],
+                                 (hm.get('from') or {}).get('email', '')[:30]))
+                return chr(10).join(lines2)
+            else:
+                return '📬 agent.qq.com 信箱里没有含「%s」的邮件。' % kw
     if re.search(r'验证码|code|otp', instruction, re.I):
         codes = extract_codes(msgs)
         if not codes:
             return '🔢 最近 %d 封邮件里没有验证码。' % len(msgs)
         return '🔢 验证码:' + chr(10).join(
             '- %s ← %s (%s)' % (c, frm, sub) for c, frm, sub in codes)
+    unread_n = sum(1 for m in msgs if not m.get('is_read'))
     lines = ['📬 agent.qq.com: %d封未读 / 共%d封' % (unread_n, len(msgs))]
     for m in msgs[:5]:
         flag = '🔴' if not m.get('is_read') else '  '
@@ -225,7 +243,7 @@ def run_mail(instruction):
 
 # ==================== files 文件工人 ====================
 ES_EXE = r'C:\Program Files\Everything\es.exe'
-AD_PY = os.environ.get('BUTLER_ALIYUN_AD', '')  # 可选: aliyun-drive 技能 ad.py 路径
+AD_PY = os.environ.get('BUTLER_ALIYUN_AD', '')
 CLOUD_DEFAULT = '/zcode共享文件/'
 LOCAL_ROOTS = (os.path.expanduser('~') + r'\Desktop',
                os.path.expanduser('~') + r'\Downloads')
@@ -426,6 +444,32 @@ def _curl(url, timeout=20):
 
 
 # ================= weather worker =================
+def extract_cities(instruction, default=DEFAULT_CITY):
+    """抽全部城市(多城市支持: '惠州和上海的天气'→['惠州','上海']); 兜底[default]
+    策略: 预清理 → 按和/与/及切段 → 每段独立抽(段内'XX的天气'或纯地名)"""
+    s = re.sub(r'^(任务[:：])?\s*(请|帮我|麻烦|帮忙)?(联网|上网)?(搜索|搜一下|搜一搜|搜搜|查询|查一下|查查|查下|查|看看|看下|告诉我|下)+',
+               '', (instruction or '').strip()).strip()
+    s = re.sub(r'(今日|今天|明日|明天|后天|昨日|昨天|现在|当前|实时|傍晚|早上|晚上|中午|上午|下午)', '', s)
+    found = []
+    for seg in re.split(r'[和与及、,，]', s):
+        c = None
+        m = re.search(r'([一-龥]{2,4})(?:市)?(?:的|地区)?(?:天气|气温|温度|降雨|下雨|湿度)', seg)
+        if m:
+            c = m.group(1)
+        else:
+            m2 = re.match(r'^([一-龥]{2,4})$', seg.strip())
+            if m2:
+                c = m2.group(1)
+        if c:
+            c = re.sub(r'^(查|看看|看下|帮我|请问|一下|今天|明天|后天|现在|当前|汇总|然后|顺便|再)+', '', c)
+            c = re.sub(r'的$', '', c)   # '上海的'→'上海'
+            if len(c) >= 2 and c not in found:
+                found.append(c)
+    if not found:
+        found = [extract_city(instruction, default)]
+    return found[:3]
+
+
 def extract_city(instruction, default=DEFAULT_CITY):
     """从话里抽城市名; 抽不到用默认。匹配『XX的天气』『在XX』『去XX玩』及常见直呼"""
     # 预清理: 剥指令前缀动词 + 去时间词(否则『搜索下惠州今日的天气』整句被当城市)
@@ -442,7 +486,7 @@ def extract_city(instruction, default=DEFAULT_CITY):
         city = m.group(1)
         # 去掉常见前缀动词残留
         city = re.sub(r'^(查|看看|看下|帮我|请问|一下|今天|明天|后天|现在|当前)+', '', city)
-        city = re.split(r'[和与及]', city)[-1]   # '汇总GitHub趋势Top5和惠州'→'惠州'
+        city = re.split(r'[和与及]', city)[-1]   # 单城市兜底; 多城市走 extract_cities
         if len(city) >= 2:
             return city
     # 英文城市: 'Tokyo weather' / 'weather in Paris' / 'xyzzz 的天气'。
@@ -584,10 +628,16 @@ def parse_weather(j1, city):
             pop))
     return '\n'.join(lines)
 
-
 def run_weather(instruction):
-    city = extract_city(instruction)
-    return parse_weather(fetch_weather(city), city)
+    cities = extract_cities(instruction)
+    parts = []
+    for c in cities:
+        try:
+            parts.append(parse_weather(fetch_weather(c), c))
+        except Exception as e:
+            parts.append('🌤 %s 天气获取失败: %s' % (c, str(e)[:60]))
+    sep = '\n\n----------\n\n'
+    return sep.join(parts)
 
 
 # ================= search worker =================
@@ -600,39 +650,52 @@ def extract_query(instruction):
 
 
 def run_search(instruction, summarize=True):
-    """unified-search(anysearch→exa→tavily 降级链) + LLM 摘要"""
+    """unified-search(降级链) + LLM 摘要(完整块解析, 内容丰富)"""
     query = extract_query(instruction)
     if not query:
         raise ValueError('空搜索词')
     r = subprocess.run(['python', SEARCH_CLI, query], capture_output=True,
                        timeout=60, encoding='utf-8', errors='replace')
     out = (r.stdout or '') + (r.stderr or '')
-    # 解析条目: "N. 标题 / URL / 摘要" 或多行块
+    # 剥耗时头: "== 由 xxx 服务 (3.7s, 5 条) ==" 是CLI的元信息, 不是搜索内容
+    out = re.sub(r'^==\s*由.*?条\)\s*==\s*', '', out).strip()
+    # 解析完整块: N.标题 + URL + 摘要(非只取标题首行)
     entries = []
-    for m in re.finditer(r'^\s*\d+\.\s*(.+)$', out, re.M):
-        entries.append(m.group(1).strip())
+    for m in re.finditer(
+            r'(\d+\.[^\n]+(?:\n(?!\d+\.)[^\n]+)*)', out):
+        block = m.group(1).strip()
+        if len(block) > 10:
+            entries.append(block)
     if not entries:
-        # 兜底: 非空就当纯文本结果
         body = out.strip()
-        if not body or '== 由' not in out and len(body) < 20:
+        if not body or ('== 由' not in out and len(body) < 20):
             raise ValueError('搜索无结果')
         return body[:1500]
-    ctx = '\n'.join(entries[:8])[:2400]
+    ctx = '\n\n'.join(entries[:8])[:4000]
     if summarize:
         try:
             import model_router
             ans = model_router.chat(
-                '用3-6行中文口语总结以下搜索结果来回答问题「%s」。'
-                '结论在前, 引用来源标题, 不确定就说不确定。'
-                '%s【搜索结果】%s' % (query, chr(10), ctx), mt=450)
+                '用8-15行简体中文回答用户问题「%s」。要求: 结论在前, 详细引用搜索结果中的实质内容(数据/日期/事件/影响), 不确定就说不确定。所有描述性文字必须简体中文——搜索来源可能含繁体/英文, 翻译为简体中文后再输出。专有名词/公司名/产品名保留原文。'
+                + NL + '【搜索结果】' + NL + ctx[:4000],
+                mt=1500)
             if ans and ans.strip():
-                return ans.strip()[:1200] + '\n\n(来源: 前%d条搜索结果)' % min(len(entries), 8)
+                # 繁体转简体兜底(搜索源可能含繁体中文网站)
+                try:
+                    from opencc import OpenCC
+                    ans = OpenCC('t2s').convert(ans)
+                except ImportError:
+                    pass  # opencc未安装时跳过
+                try:
+                    from _t2s import convert as _t2c
+                    ans = _t2c(ans)
+                except Exception:
+                    pass
+                return ans.strip()[:3000] + '\n\n(来源: 前%d条搜索结果)' % min(len(entries), 8)
         except Exception:
             pass
-    return '\n'.join(entries[:5])[:1200]
+    return "\n\n".join(entries[:5])[:1200]
 
-
-# ================= note worker =================
 def _fmt_notes(rows, header='📝'):
     if not rows:
         return header + ' 没有找到笔记。'

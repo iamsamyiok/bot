@@ -12,7 +12,6 @@ import re
 import os
 import socket
 import subprocess
-import config as _cfgp
 import sys
 import threading
 import time
@@ -139,9 +138,10 @@ def _fmt_tasks(rows):
     return '\n'.join(lines)
 
 
+import config as _cfgp
 DESKTOP1 = _cfgp.desktop_dir()
 KB_PROJECT_DIR = os.path.join(_cfgp.knowledge_dir(), 'projects')
-TASK_LOG = os.path.join(DESKTOP1, 'task_log.md')
+TASK_LOG = DESKTOP1 + r'\用户交办事项记录.md'
 
 
 def _syslog(text):
@@ -284,6 +284,11 @@ class Router:
         t0 = time.time()
         now = time.strftime('%Y-%m-%d %H:%M:%S')
         W._append({'type': 'user', 'text': text, 'source': source, 'ts': now})
+        try:
+            import uxlog
+            uxlog.user_sent(text, source)
+        except Exception:
+            pass
         # ③技能重放: 派单前查技能卡, 命中且用户语气是"再来/重跑"→按模板重派
         try:
             import skills_memo
@@ -327,9 +332,12 @@ class Router:
         t = text.strip()
         d = {'kind': 'reply'}
         # 记忆查询快速路径
-        m_mq = re.search(r'(?:我有没有|查一下|帮我查|告诉我).{0,8}(?:关于|有关)?(.{1,20})(?:的)?记忆', text)
+        m_mq = re.search(r'(?:我有没有|查一下|帮我查|告诉我).{0,8}(?:关于|有关)?(.{1,20}?)(?:的)?记忆', text)
         if m_mq:
-            kw = m_mq.group(1).strip()
+            # 框架剥离法: 去问句动词与'记忆', 再剥虚词(旧正则组会捕获'的')
+            kw = re.sub(r'(?:我有没有|查一下|帮我查|告诉我)|记忆', '', text)
+            kw = re.sub(r'^(的|了|我|关于|有|有没有)+|的$', '', kw).strip()
+            kw = kw[:20]
             try:
                 import memory_engine
                 prof = [p['text'] for p in memory_engine.profile_list() if kw in p.get('text', '')]
@@ -424,10 +432,12 @@ class Router:
                 tid = W.new_task(t, source=source, plan=d['subtasks'],
                                  plan_note=d.get('note', ''), image=image,
                                  wtype=d.get('worker', 'codex'))
-                # 任务气泡本身就是回执(时间线立即可见), 不再追加重复的 ack 气泡;
-                # reply 仅作为飞书侧的文字回执返回
-                reply = '[已接收 %s] %s。完成后这里会给总结; 可发「进度 %s」随时查。' % (
-                    tid, d.get('note') or '已派 worker 执行', tid)
+                # 过渡回复(用户指令): 具体显示是什么worker执行(去emoji/括号尾巴)
+                _wnote = d.get('note') or '已派 worker 执行'
+                _wname = _wnote.split('执行')[0].replace('已派 ', '').strip()
+                _wname = re.sub(r'[🌀-🫿☀-➿]', '', _wname)  # 去emoji
+                _wname = re.sub(r'\(.*?\)', '', _wname).strip() or 'worker'
+                reply = '已接收，任务编号%s，已派%s执行。' % (tid, _wname)
         if d.get('kind') == 'reply':
             W._append({'type': 'router', 'text': reply,
                        'ts': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -451,6 +461,12 @@ class Router:
                 memory_engine.index_task(cid, text[:500], reply[:4000], source)
             except Exception:
                 pass
+        # UXL埋点: 用户看到的即时回复(ack/直答/错误), 含确认延迟
+        try:
+            import uxlog
+            uxlog.user_reply(reply, source, latency_ms=int((time.time() - t0) * 1000))
+        except Exception:
+            pass
         return reply
 
     def _on_summary(self, t):
@@ -565,15 +581,14 @@ class Router:
                 voice_io.speak_async(txt)
             except Exception:
                 pass
-        # D: 后续建议附在完成通知尾(飞书/ntfy/队列三路自然带出)
-        sug = t.get('suggest') or ''
-        if sug and t.get('status') == 'done':
-            sm = sm + chr(10) + '💡 可以接着说: ' + sug
         if t.get('source') == 'feishu':
             body = sm.split(chr(10), 1)[-1] if sm.startswith('[') else sm
             emoji = '✅' if t.get('status') == 'done' else ('⛔' if t.get('status') == 'stopped' else '❌')
             try:
                 self.F.reply_to_last(emoji + ' ' + body)
+                import uxlog
+                uxlog.user_push_done(emoji + ' ' + body, t.get('source', ''),
+                                     t.get('id', ''), via='feishu')
             except Exception as e:
                 _status_err = '回推失败: %s' % str(e)[:100]
             # 产物回传: 扫任务产物目录, 有文件则上传发到对话
@@ -616,6 +631,8 @@ class Router:
                        title='管家·任务%s' % {'done': '完成', 'failed': '失败',
                                               'stopped': '已停止'}.get(
                                                   t.get('status'), t.get('status', '')))
+            import uxlog
+            uxlog.user_push_ntfy(first_line[:280], t.get('id', ''))
         except Exception:
             pass
 
@@ -877,8 +894,12 @@ class Router:
                     return v[:4] + '****' + v[-4:]
                 return v[:2] + '****'
             return 200, {'providers': [
-                [{'name': p[0], 'url': p[1], 'model': p[3],
-                  'key': mk(p[2])} for p in mr._chains()[0]],
+                {'name': '① 硅基流动 (首选, ~0.3s)', 'url': mr.SF_EP,
+                 'model': mr.SF_MODEL, 'key': mk('SILICONFLOW_API_KEY')},
+                {'name': '② OpenRouter (二选)', 'url': mr.OR_EP,
+                 'model': mr.OR_MODEL, 'key': mk('OPENROUTER_KEY_1')},
+                {'name': '③ 魔搭 (三选)', 'url': mr.MS_EP,
+                 'model': mr.MS_MODEL, 'key': mk('MODELSCOPE_API_TOKEN')},
             ], 'worker': 'Codex CLI (独立登录计费) · 自动发现: ' + W.codex_exe()}
         if path == '/api/chat' and method == 'POST':
             text = (body.get('text') or '').strip()
