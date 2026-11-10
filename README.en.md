@@ -1,4 +1,4 @@
-# bot — Your self-hosted personal AI butler
+# musebot — Your self-hosted personal AI butler — inspired by Muse & Grok Bot
 
 [中文](README.md) | **English**
 
@@ -24,7 +24,7 @@ Workers: codex (private tasks), opencode (public tasks, free LLM, auto-fallback 
 ## Quick start
 
 ```bash
-git clone https://github.com/YOURNAME/bot.git && cd bot
+git clone https://github.com/iamsamyiok/musebot.git && cd bot
 cp config/bot.example.json config/bot.json   # optional: your base_url/key/model
 python butler.py
 ```
@@ -41,7 +41,7 @@ Windows 10/11 recommended (GUI worker + watchdog are Windows-integrated); Linux/
 
 ## Privacy
 
-Memory, task ledger, config: all local (`~/.butlerbot/`). Keys: local bot.json only, never committed. Your LLM provider sees your chats — use a local model or the private codex worker for sensitive work.
+Memory, task ledger, config: all local (`~/.musebot/`). Keys: local bot.json only, never committed. Your LLM provider sees your chats — use a local model or the private codex worker for sensitive work.
 
 ## License
 

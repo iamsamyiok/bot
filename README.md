@@ -1,4 +1,4 @@
-# bot — Your self-hosted personal AI butler
+# musebot — Your self-hosted personal AI butler — inspired by Muse & Grok Bot
 
 **中文** | [English](README.en.md)
 
@@ -61,7 +61,7 @@
 
 ```bash
 # 1. 拉代码
-git clone https://github.com/YOURNAME/bot.git && cd bot
+git clone https://github.com/iamsamyiok/musebot.git && cd bot
 
 # 2. (可选)配置模型与密钥 —— 不配也能跑核心链(免费模型档)
 cp config/bot.example.json config/bot.json   # 编辑填入你的 base_url/key/model
@@ -100,7 +100,7 @@ Router 大脑: 确定性快速路径 + LLM 双档分类 + 批处理聚合(连发
 
 ## 隐私边界
 
-- 记忆、任务账本、配置全部在你本机(`~/.butlerbot/`)
+- 记忆、任务账本、配置全部在你本机(`~/.musebot/`)
 - 密钥只存本地 bot.json,永不入库、永不上传
 - 你配置的 LLM 提供商能看到你的对话内容——**涉密任务请配本地模型**或指定私有引擎(codex worker)
 
